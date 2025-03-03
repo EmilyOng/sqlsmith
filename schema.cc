@@ -56,7 +56,7 @@ void schema::generate_indexes() {
 
   assert(booltype);
   assert(inttype);
-  assert(internaltype);
-  assert(arraytype);
+  // assert(internaltype);
+  // assert(arraytype);
 
 }

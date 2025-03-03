@@ -118,24 +118,31 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
 	     "else format('%I.%I', typnamespace::regnamespace, typname) end, "
 	     "oid, typdelim, typrelid, typelem, typarray, typtype "
 	     "from pg_type ");
-  
+
+  set<string> supported_types;
+
   for (auto row = r.begin(); row != r.end(); ++row) {
     string name(row[0].as<string>());
-    OID oid(row[1].as<OID>());
-    string typdelim(row[2].as<string>());
-    OID typrelid(row[3].as<OID>());
-    OID typelem(row[4].as<OID>());
-    OID typarray(row[5].as<OID>());
-    string typtype(row[6].as<string>());
-    //       if (schema == "pg_catalog")
-    // 	continue;
-    //       if (schema == "information_schema")
-    // 	continue;
+    if (name == "bool" || name == "_bool" || name == "int4" || name == "_int4" || name == "int8" || name == "_int8") {
+            OID oid(row[1].as<OID>());
+            supported_types.insert(row[1].as<string>());
 
-    pg_type *t = new pg_type(name,oid,typdelim[0],typrelid, typelem, typarray, typtype[0]);
-    oid2type[oid] = t;
-    name2type[name] = t;
-    types.push_back(t);
+            string typdelim(row[2].as<string>());
+            OID typrelid(row[3].as<OID>());
+            OID typelem(row[4].as<OID>());
+            OID typarray(row[5].as<OID>());
+            string typtype(row[6].as<string>());
+
+            //       if (schema == "pg_catalog")
+            // 	continue;
+            //       if (schema == "information_schema")
+            // 	continue;
+
+            pg_type *t = new pg_type(name,oid,typdelim[0],typrelid, typelem, typarray, typtype[0]);
+            oid2type[oid] = t;
+            name2type[name] = t;
+            types.push_back(t);
+    }
   }
 
   booltype = name2type["bool"];
@@ -155,6 +162,12 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
 	     
   for (auto row = r.begin(); row != r.end(); ++row) {
     string schema(row[1].as<string>());
+
+    // Ignore tables from Postgres' internal catalogs.
+    if (schema == "pg_catalog" || schema == "information_schema") {
+            continue;
+    }
+
     string insertable(row[2].as<string>());
     string table_type(row[3].as<string>());
 
@@ -207,17 +220,40 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
 		    "oprright, oprresult "
 		    "from pg_catalog.pg_operator "
                     "where 0 not in (oprresult, oprright, oprleft) ");
+
+  set<string> supported_operators = {
+          "+", "-", "*", "!", "=", ">=", ">", "<=", "<", "!=", "<>"
+  };
+
   for (auto row : r) {
-    op o(row[0].as<string>(),
+    string oprname(row[0].as<string>());
+    if (supported_operators.find(oprname) == supported_operators.end()) {
+            continue;
+    }
+
+    string oprleft_type(row[1].as<string>()), oprright_type(row[2].as<string>());
+    string oprresult_type(row[3].as<string>());
+
+    if (
+            supported_types.find(oprleft_type) == supported_types.end() ||
+            supported_types.find(oprright_type) == supported_types.end() ||
+            supported_types.find(oprresult_type) == supported_types.end()
+    ) {
+            continue;
+    }
+
+    op o(oprname,
 	 oid2type[row[1].as<OID>()],
 	 oid2type[row[2].as<OID>()],
 	 oid2type[row[3].as<OID>()]);
+
     register_operator(o);
   }
 
   cerr << "done." << endl;
 
   cerr << "Loading routines...";
+
   r = w.exec("select (select nspname from pg_namespace where oid = pronamespace), oid, prorettype, proname "
 	     "from pg_proc "
 	     "where prorettype::regtype::text not in ('event_trigger', 'trigger', 'opaque', 'internal') "
@@ -227,6 +263,9 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
 	     "and not (proretset or " + procedure_is_aggregate + " or " + procedure_is_window + ") ");
 
   for (auto row : r) {
+    if (supported_types.find(row[2].as<string>()) == supported_types.end()) {
+            continue;
+    }
     routine proc(row[0].as<string>(),
 		 row[1].as<string>(),
 		 oid2type[row[2].as<long>()],
@@ -245,6 +284,9 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
       
     r = w.exec(q);
     for (auto row : r) {
+      if (supported_types.find(row[0].as<string>()) == supported_types.end()) {
+              continue;
+      }
       sqltype *t = oid2type[row[0].as<OID>()];
       assert(t);
       proc.argtypes.push_back(t);
@@ -264,6 +306,9 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
 	     "and " + procedure_is_aggregate);
 
   for (auto row : r) {
+    if (supported_types.find(row[2].as<string>()) == supported_types.end()) {
+            continue;
+    }
     routine proc(row[0].as<string>(),
 		 row[1].as<string>(),
 		 oid2type[row[2].as<OID>()],
@@ -282,6 +327,9 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
       
     r = w.exec(q);
     for (auto row : r) {
+      if (supported_types.find(row[0].as<string>()) == supported_types.end()) {
+              continue;
+      }
       sqltype *t = oid2type[row[0].as<OID>()];
       assert(t);
       proc.argtypes.push_back(t);
